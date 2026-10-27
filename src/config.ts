@@ -12,12 +12,16 @@ interface ServerConfig {
   port: number;
   yapiCacheTTL: number; // 缓存时效，单位为分钟
   yapiLogLevel: string; // 日志级别：debug, info, warn, error
+  yapiLoginEmail: string; // YApi 登录账号；up_cat / del_cat 只认登录态 Cookie
+  yapiLoginPassword: string; // YApi 登录密码
   configSources: {
     yapiBaseUrl: "cli" | "env" | "default";
     yapiToken: "cli" | "env" | "default";
     port: "cli" | "env" | "default";
     yapiCacheTTL: "cli" | "env" | "default";
     yapiLogLevel: "cli" | "env" | "default";
+    yapiLoginEmail: "cli" | "env" | "default";
+    yapiLoginPassword: "cli" | "env" | "default";
   };
 }
 
@@ -32,6 +36,8 @@ interface CliArgs {
   port?: number;
   "yapi-cache-ttl"?: number;
   "yapi-log-level"?: string;
+  "yapi-login-email"?: string;
+  "yapi-login-password"?: string;
 }
 
 export function getServerConfig(): ServerConfig {
@@ -59,6 +65,14 @@ export function getServerConfig(): ServerConfig {
         description: "YApi日志级别 (debug, info, warn, error)",
         choices: ["debug", "info", "warn", "error"],
       },
+      "yapi-login-email": {
+        type: "string",
+        description: "YApi登录账号（邮箱），用于需要登录态的写操作，如修改/删除分类",
+      },
+      "yapi-login-password": {
+        type: "string",
+        description: "YApi登录密码，用于需要登录态的写操作，如修改/删除分类",
+      },
     })
     .help()
     .parseSync() as CliArgs;
@@ -69,12 +83,16 @@ export function getServerConfig(): ServerConfig {
     port: 3388,
     yapiCacheTTL: 10, // 默认缓存10分钟
     yapiLogLevel: "info", // 默认日志级别
+    yapiLoginEmail: "",
+    yapiLoginPassword: "",
     configSources: {
       yapiBaseUrl: "default",
       yapiToken: "default",
       port: "default",
       yapiCacheTTL: "default",
       yapiLogLevel: "default",
+      yapiLoginEmail: "default",
+      yapiLoginPassword: "default",
     },
   };
 
@@ -131,6 +149,24 @@ export function getServerConfig(): ServerConfig {
     }
   }
 
+  // Handle YAPI_LOGIN_EMAIL
+  if (argv["yapi-login-email"]) {
+    config.yapiLoginEmail = argv["yapi-login-email"];
+    config.configSources.yapiLoginEmail = "cli";
+  } else if (process.env.YAPI_LOGIN_EMAIL) {
+    config.yapiLoginEmail = process.env.YAPI_LOGIN_EMAIL;
+    config.configSources.yapiLoginEmail = "env";
+  }
+
+  // Handle YAPI_LOGIN_PASSWORD
+  if (argv["yapi-login-password"]) {
+    config.yapiLoginPassword = argv["yapi-login-password"];
+    config.configSources.yapiLoginPassword = "cli";
+  } else if (process.env.YAPI_LOGIN_PASSWORD) {
+    config.yapiLoginPassword = process.env.YAPI_LOGIN_PASSWORD;
+    config.configSources.yapiLoginPassword = "env";
+  }
+
   // 创建日志实例
   const logger = new Logger("Config", config.yapiLogLevel);
 
@@ -145,6 +181,13 @@ export function getServerConfig(): ServerConfig {
   logger.info(`- PORT: ${config.port} (source: ${config.configSources.port})`);
   logger.info(`- YAPI_CACHE_TTL: ${config.yapiCacheTTL} 分钟 (source: ${config.configSources.yapiCacheTTL})`);
   logger.info(`- YAPI_LOG_LEVEL: ${config.yapiLogLevel} (source: ${config.configSources.yapiLogLevel})`);
+  logger.info(
+    `- YAPI_LOGIN_EMAIL: ${config.yapiLoginEmail || "未配置"} (source: ${config.configSources.yapiLoginEmail})`,
+  );
+  // 密码只输出是否配置，绝不打印内容
+  logger.info(
+    `- YAPI_LOGIN_PASSWORD: ${config.yapiLoginPassword ? "已配置" : "未配置"} (source: ${config.configSources.yapiLoginPassword})`,
+  );
   logger.info(""); // Empty line for better readability
 
   return config;

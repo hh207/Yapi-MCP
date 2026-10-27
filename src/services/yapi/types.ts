@@ -104,8 +104,51 @@ export interface GetCategoryListResponse extends ApiResponse<CategoryInfo[]> {}
 export interface SaveApiResponse extends ApiResponse<{ _id: string; [key: string]: any }> {}
 
 // 接口搜索结果返回值
+// 注意：YApi 的 list / list_cat 返回中 count 是总记录数，total 是总页数
 export interface ApiSearchResponse extends ApiResponse<{
-  total: number;      // 总结果数
-  count: number;      // 当前页结果数
-  list: ApiSearchResultItem[]; // 结果列表
-}> {} 
+  total: number;      // 总页数
+  count: number;      // 总记录数
+  list: ApiSearchResultItem[]; // 当前页结果列表
+}> {}
+
+// 新增分类参数
+export interface AddCategoryParams {
+  project_id: string | number; // 所属项目ID
+  name: string;                // 分类名称
+  desc?: string;               // 分类描述
+}
+
+// 更新分类参数
+export interface UpdateCategoryParams {
+  catid: string | number;      // 分类ID
+  name?: string;               // 分类名称，不传则保持原值
+  desc?: string;               // 分类描述，不传则保持原值
+}
+
+// 删除分类参数
+export interface DeleteCategoryParams {
+  catid: string | number;      // 分类ID
+}
+
+// 分类新增/更新/删除返回值
+export interface SaveCategoryResponse extends ApiResponse<{ _id: string | number; [key: string]: any }> {}
+
+// 登录用户信息
+export interface LoginUserInfo {
+  uid: number;                 // 用户ID
+  username: string;            // 用户名
+  email: string;               // 登录邮箱
+  role: string;                // 角色：admin / member
+  type?: string;               // 账号类型
+  [key: string]: any;
+}
+
+// 登录返回值
+export interface LoginResponse extends ApiResponse<LoginUserInfo> {}
+
+// 分类搜索结果项
+export interface CategorySearchResultItem {
+  projectId: string;           // 所属项目ID
+  projectName: string;         // 所属项目名称
+  category: CategoryInfo;      // 分类信息
+}

@@ -1,0 +1,7 @@
+allowBuilds:
+  esbuild: true
+
+# zod-to-json-schema 3.25+ 需要 zod/v3 子路径（zod >= 3.25），
+# 本项目锁定 zod 3.24.2，必须把 zod-to-json-schema 压到 3.24.2，否则运行时报 ERR_PACKAGE_PATH_NOT_EXPORTED
+overrides:
+  zod-to-json-schema: 3.24.2

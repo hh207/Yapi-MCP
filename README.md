@@ -23,6 +23,16 @@ Yapi Auto MCP Server 是一个基于 [Model Context Protocol](https://modelconte
 - **yapi_list_projects**: 列出所有可访问的项目
 - **yapi_get_categories**: 获取项目下的接口分类和接口列表
 
+### 🗂 分类管理
+
+- **yapi_add_categories**: 批量新增接口分类（同一项目一次创建多个）
+- **yapi_update_categories**: 批量修改分类名称/描述，未传的字段保持原值
+- **yapi_delete_categories**: 批量删除分类，默认只预览将连带删除的接口，必须传 `confirm=true` 才执行
+- **yapi_list_categories**: 查看分类列表，支持按分类名称（模糊）或分类 ID（包含匹配）搜索；不传 `projectId` 时搜索所有已配置项目
+
+> ⚠️ YApi 的 `up_cat` / `del_cat` 接口只认登录态 Cookie，不接受项目 token，且删除分类会**连带删除该分类下的所有接口**。
+> 使用批量修改/删除前，请在配置中提供 `YAPI_LOGIN_EMAIL` / `YAPI_LOGIN_PASSWORD`，MCP 会自动登录并在登录态失效时重新登录。
+
 ### ✏️ 接口管理
 
 - **yapi_save_api**: 创建新接口或更新现有接口
@@ -106,7 +116,9 @@ Yapi Auto MCP Server 是一个基于 [Model Context Protocol](https://modelconte
         "YAPI_BASE_URL": "https://yapi.example.com",
         "YAPI_TOKEN": "projectId:token1,projectId2:token2",
         "YAPI_CACHE_TTL": "10",
-        "YAPI_LOG_LEVEL": "info"
+        "YAPI_LOG_LEVEL": "info",
+        "YAPI_LOGIN_EMAIL": "you@example.com",
+        "YAPI_LOGIN_PASSWORD": "your_password"
       }
     }
   }
@@ -138,6 +150,10 @@ PORT=3388
 # 可选配置
 YAPI_CACHE_TTL=10
 YAPI_LOG_LEVEL=info
+
+# 可选：登录账号，批量修改/删除分类时需要
+YAPI_LOGIN_EMAIL=you@example.com
+YAPI_LOGIN_PASSWORD=******
 ```
 
 3. **启动服务**：
@@ -205,6 +221,12 @@ Token 格式说明：
 4. **更新接口**：
    > "更新用户登录接口，添加验证码参数"
 
+5. **管理分类**：
+   > "在项目 1026 下批量新建「支付管理」「退款管理」两个分类"
+   > "搜一下项目 1026 里名字带「订单」的分类"
+   > "把分类 101 改名为「用户中心」"
+   > "删除分类 102"（会先预览将连带删除的接口，确认后才真正执行）
+
 ## 高级配置
 
 ### 命令行参数详解
@@ -215,6 +237,8 @@ Token 格式说明：
 | `--yapi-token`     | YApi 项目 Token（支持多项目） | `--yapi-token=1026:token1,1027:token2`     | -      |
 | `--yapi-cache-ttl` | 缓存时效（分钟）              | `--yapi-cache-ttl=10`                      | 10     |
 | `--yapi-log-level` | 日志级别                      | `--yapi-log-level=info`                    | info   |
+| `--yapi-login-email` | YApi 登录账号（邮箱）      | `--yapi-login-email=you@example.com`       | -      |
+| `--yapi-login-password` | YApi 登录密码           | `--yapi-login-password=******`             | -      |
 | `--port`           | HTTP 服务端口（SSE 模式）     | `--port=3388`                              | 3388   |
 | `--stdio`          | 启用 stdio 模式（MCP 必需）   | `--stdio`                                  | -      |
 
@@ -231,6 +255,10 @@ YAPI_TOKEN=projectId:your_token_here
 PORT=3388                    # HTTP 服务端口
 YAPI_CACHE_TTL=10           # 缓存时效（分钟）
 YAPI_LOG_LEVEL=info         # 日志级别：debug, info, warn, error, none
+
+# 可选：登录账号，批量修改/删除分类时需要（YApi 的 up_cat / del_cat 只认登录态 Cookie）
+YAPI_LOGIN_EMAIL=you@example.com
+YAPI_LOGIN_PASSWORD=******
 ```
 
 ### 日志级别说明

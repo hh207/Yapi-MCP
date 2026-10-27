@@ -6,6 +6,7 @@ import { IncomingMessage, ServerResponse } from "http";
 import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 import { YApiService } from "./services/yapi/api";
+import type { CategoryInfo } from "./services/yapi/types";
 import { ProjectInfoCache } from "./services/yapi/cache";
 import { Logger } from "./services/yapi/logger";
 
@@ -17,9 +18,22 @@ export class YapiMcpServer {
   private sseTransport: SSEServerTransport | null = null;
   private readonly isStdioMode: boolean;
 
-  constructor(yapiBaseUrl: string, yapiToken: string, yapiLogLevel: string = "info", yapiCacheTTL: number = 10) {
+  constructor(
+    yapiBaseUrl: string,
+    yapiToken: string,
+    yapiLogLevel: string = "info",
+    yapiCacheTTL: number = 10,
+    yapiLoginEmail: string = "",
+    yapiLoginPassword: string = ""
+  ) {
     this.logger = new Logger("YapiMCP", yapiLogLevel);
-    this.yapiService = new YApiService(yapiBaseUrl, yapiToken, yapiLogLevel);
+    this.yapiService = new YApiService(
+      yapiBaseUrl,
+      yapiToken,
+      yapiLogLevel,
+      yapiLoginEmail,
+      yapiLoginPassword
+    );
     this.projectInfoCache = new ProjectInfoCache(yapiCacheTTL);
     // 判断是否为stdio模式
     this.isStdioMode = process.env.NODE_ENV === "cli" || process.argv.includes("--stdio");
@@ -557,6 +571,402 @@ export class YapiMcpServer {
         }
       }
     );
+
+    // 批量新增分类
+    this.server.tool(
+      "yapi_add_categories",
+      "批量新增YApi接口分类（同一个项目下可一次创建多个分类）",
+      {
+        projectId: z.string().describe("YApi项目ID，新增的分类都归属该项目"),
+        categories: z.array(z.object({
+          name: z.string().describe("分类名称"),
+          desc: z.string().optional().describe("分类描述")
+        })).describe("要新增的分类列表，如：[{\"name\":\"用户管理\",\"desc\":\"用户相关接口\"}]")
+      },
+      async ({ projectId, categories }) => {
+        if (!categories || categories.length === 0) {
+          return {
+            content: [{ type: "text", text: "未提供要新增的分类，categories 不能为空" }],
+          };
+        }
+
+        const succeeded: Array<{ name: string; catid: string }> = [];
+        const failed: Array<{ name: string; reason: string }> = [];
+
+        for (const category of categories) {
+          try {
+            this.logger.info(`新增分类: ${category.name}, 项目ID: ${projectId}`);
+            const response = await this.yapiService.addCategory({
+              project_id: projectId,
+              name: category.name,
+              desc: category.desc
+            });
+            succeeded.push({
+              name: category.name,
+              catid: String(response.data?._id ?? "")
+            });
+          } catch (error) {
+            this.logger.error(`新增分类 ${category.name} 失败:`, error);
+            failed.push({ name: category.name, reason: this.formatError(error) });
+          }
+        }
+
+        let text = `批量新增分类完成：成功 ${succeeded.length} 个，失败 ${failed.length} 个\n`;
+
+        if (succeeded.length > 0) {
+          text += "\n## 新增成功\n";
+          succeeded.forEach(item => {
+            text += `- ${item.name}（分类ID: ${item.catid || "未返回"}）\n`;
+          });
+        }
+
+        if (failed.length > 0) {
+          text += "\n## 新增失败\n";
+          failed.forEach(item => {
+            text += `- ${item.name}：${item.reason}\n`;
+          });
+        }
+
+        return { content: [{ type: "text", text }] };
+      }
+    );
+
+    // 批量修改分类
+    this.server.tool(
+      "yapi_update_categories",
+      "批量修改YApi接口分类名称或描述（需要配置 YAPI_LOGIN_EMAIL / YAPI_LOGIN_PASSWORD，YApi 的 up_cat 只认登录态）",
+      {
+        categories: z.array(z.object({
+          catid: z.string().describe("要修改的分类ID"),
+          name: z.string().optional().describe("新的分类名称，不传则保持原名"),
+          desc: z.string().optional().describe("新的分类描述，不传则保持原描述")
+        })).describe("要修改的分类列表，如：[{\"catid\":\"123\",\"name\":\"新名称\"}]")
+      },
+      async ({ categories }) => {
+        if (!categories || categories.length === 0) {
+          return {
+            content: [{ type: "text", text: "未提供要修改的分类，categories 不能为空" }],
+          };
+        }
+
+        const updateItems: Array<{ catid: string; name?: string; desc?: string }> = categories;
+        const invalid = updateItems.filter(item => !item.name && item.desc === undefined);
+        if (invalid.length > 0) {
+          return {
+            content: [{
+              type: "text",
+              text: `以下分类未提供任何修改内容（name 与 desc 均为空）：${invalid.map(i => i.catid).join(", ")}`
+            }],
+          };
+        }
+
+        const succeeded: Array<{ catid: string; name?: string; desc?: string }> = [];
+        const failed: Array<{ catid: string; reason: string }> = [];
+
+        for (const item of updateItems) {
+          try {
+            const resolved = await this.resolveCategory(item.catid);
+            if (!resolved) {
+              failed.push({
+                catid: item.catid,
+                reason: "未找到该分类（请确认分类ID，或该项目未配置在 YAPI_TOKEN 中）"
+              });
+              continue;
+            }
+
+            const nextName = item.name !== undefined ? item.name : resolved.category.name;
+            const nextDesc = item.desc !== undefined ? item.desc : resolved.category.desc;
+
+            if (nextName === resolved.category.name && nextDesc === resolved.category.desc) {
+              succeeded.push({ catid: item.catid, name: nextName, desc: nextDesc });
+              continue;
+            }
+
+            this.logger.info(`更新分类: ${item.catid}, 项目ID: ${resolved.projectId}`);
+            await this.yapiService.updateCategory(
+              {
+                catid: item.catid,
+                name: nextName,
+                desc: nextDesc
+              },
+              resolved.projectId
+            );
+            succeeded.push({ catid: item.catid, name: nextName, desc: nextDesc });
+          } catch (error) {
+            this.logger.error(`更新分类 ${item.catid} 失败:`, error);
+            failed.push({ catid: item.catid, reason: this.formatError(error) });
+          }
+        }
+
+        let text = `批量修改分类完成：成功 ${succeeded.length} 个，失败 ${failed.length} 个\n`;
+
+        if (succeeded.length > 0) {
+          text += "\n## 修改成功\n";
+          succeeded.forEach(item => {
+            text += `- 分类ID ${item.catid} → 名称「${item.name}」，描述「${item.desc || ""}」\n`;
+          });
+        }
+
+        if (failed.length > 0) {
+          text += "\n## 修改失败\n";
+          failed.forEach(item => {
+            text += `- 分类ID ${item.catid}：${item.reason}\n`;
+          });
+        }
+
+        return { content: [{ type: "text", text }] };
+      }
+    );
+
+    // 批量删除分类
+    this.server.tool(
+      "yapi_delete_categories",
+      "批量删除YApi接口分类。YApi 会连同分类下的接口一起删除，因此默认只预览，必须传 confirm=true 才会真正执行（需要配置 YAPI_LOGIN_EMAIL / YAPI_LOGIN_PASSWORD）",
+      {
+        catids: z.array(z.string()).describe("要删除的分类ID列表"),
+        confirm: z.boolean().optional().describe("是否真正执行删除，默认 false 仅预览受影响内容")
+      },
+      async ({ catids, confirm }) => {
+        if (!catids || catids.length === 0) {
+          return {
+            content: [{ type: "text", text: "未提供要删除的分类，catids 不能为空" }],
+          };
+        }
+
+        // 1. 逐个解析分类并统计会连带删除的接口
+        interface DeletePlan {
+          catid: string;
+          projectId: string;
+          name: string;
+          desc: string;
+          apiCount: number;
+          apiTitles: string[];
+          error?: string;
+        }
+
+        const plans: DeletePlan[] = [];
+        const unresolved: string[] = [];
+
+        for (const catid of catids) {
+          const resolved = await this.resolveCategory(catid);
+          if (!resolved) {
+            unresolved.push(catid);
+            continue;
+          }
+
+          let apiCount = 0;
+          let apiTitles: string[] = [];
+          let errorText: string | undefined;
+
+          try {
+            const apis = await this.yapiService.getCategoryApis(resolved.projectId, catid);
+            apiCount = apis.length;
+            apiTitles = apis.slice(0, 10).map(api => `${api.method} ${api.path} ${api.title}`);
+          } catch (error) {
+            errorText = `统计分类下接口失败: ${this.formatError(error)}`;
+          }
+
+          plans.push({
+            catid,
+            projectId: resolved.projectId,
+            name: resolved.category.name,
+            desc: resolved.category.desc,
+            apiCount,
+            apiTitles,
+            error: errorText
+          });
+        }
+
+        // 2. 未确认时只返回预览
+        if (confirm !== true) {
+          let text = `⚠️ 预览模式：未执行任何删除。确认无误后请重新调用并传入 confirm=true。\n\n`;
+          text += `计划删除 ${plans.length} 个分类，将连带删除 ${plans.reduce((sum, p) => sum + p.apiCount, 0)} 个接口：\n`;
+
+          plans.forEach(plan => {
+            text += `\n### ${plan.name}（分类ID: ${plan.catid}，项目ID: ${plan.projectId}）\n`;
+            text += `- 分类描述: ${plan.desc || "无"}\n`;
+            text += `- 将删除接口数: ${plan.apiCount}\n`;
+            if (plan.apiTitles.length > 0) {
+              text += `- 接口示例:\n`;
+              plan.apiTitles.forEach(title => {
+                text += `  - ${title}\n`;
+              });
+              if (plan.apiCount > plan.apiTitles.length) {
+                text += `  - ...另有 ${plan.apiCount - plan.apiTitles.length} 个接口\n`;
+              }
+            }
+            if (plan.error) {
+              text += `- 注意: ${plan.error}\n`;
+            }
+          });
+
+          if (unresolved.length > 0) {
+            text += `\n以下分类ID无法解析，删除时会被跳过: ${unresolved.join(", ")}\n`;
+          }
+
+          return { content: [{ type: "text", text }] };
+        }
+
+        // 3. 真正执行删除
+        const succeeded: DeletePlan[] = [];
+        const failed: Array<{ catid: string; reason: string }> = [];
+
+        for (const plan of plans) {
+          try {
+            this.logger.info(`删除分类: ${plan.catid}, 项目ID: ${plan.projectId}`);
+            await this.yapiService.deleteCategory(plan.catid, plan.projectId);
+            succeeded.push(plan);
+          } catch (error) {
+            this.logger.error(`删除分类 ${plan.catid} 失败:`, error);
+            failed.push({ catid: plan.catid, reason: this.formatError(error) });
+          }
+        }
+
+        let text = `批量删除分类完成：成功 ${succeeded.length} 个，失败 ${failed.length} 个\n`;
+
+        if (succeeded.length > 0) {
+          text += "\n## 删除成功\n";
+          succeeded.forEach(plan => {
+            text += `- ${plan.name}（分类ID: ${plan.catid}），同时删除了 ${plan.apiCount} 个接口\n`;
+          });
+        }
+
+        if (failed.length > 0) {
+          text += "\n## 删除失败\n";
+          failed.forEach(item => {
+            text += `- 分类ID ${item.catid}：${item.reason}\n`;
+          });
+        }
+
+        if (unresolved.length > 0) {
+          text += `\n以下分类ID无法解析，已跳过: ${unresolved.join(", ")}\n`;
+        }
+
+        return { content: [{ type: "text", text }] };
+      }
+    );
+
+    // 查看/搜索分类列表
+    this.server.tool(
+      "yapi_list_categories",
+      "查看YApi接口分类列表，可按分类名称或分类ID搜索；不传 projectId 时搜索所有已配置项目",
+      {
+        projectId: z.string().optional().describe("YApi项目ID，不传则搜索所有已配置项目"),
+        keyword: z.string().optional().describe("搜索关键字，同时匹配分类名称（模糊）和分类ID（包含）"),
+        includeApis: z.boolean().optional().describe("是否附带每个分类下的接口列表，默认 false")
+      },
+      async ({ projectId, keyword, includeApis }) => {
+        try {
+          const searchResult = await this.yapiService.searchCategories({ projectId, keyword });
+
+          if (searchResult.total === 0) {
+            const scope = projectId ? `项目 ${projectId}` : "所有已配置项目";
+            const condition = keyword ? `（关键字: ${keyword}）` : "";
+            return {
+              content: [{ type: "text", text: `${scope} 下没有找到符合条件的分类${condition}` }],
+            };
+          }
+
+          // 并发拉取各分类的接口，避免分类较多时串行等待
+          const rows = await Promise.all(
+            searchResult.list.map(async (item) => {
+              const row: Record<string, any> = {
+                项目ID: item.projectId,
+                项目名称: item.projectName,
+                分类ID: item.category._id,
+                分类名称: item.category.name,
+                分类描述: item.category.desc || "无描述"
+              };
+
+              try {
+                const apis = await this.yapiService.getCategoryApis(item.projectId, item.category._id);
+                row.接口数量 = apis.length;
+                if (includeApis) {
+                  row.接口列表 = apis.map(api => ({
+                    接口ID: api._id,
+                    接口名称: api.title,
+                    请求方法: api.method,
+                    接口路径: api.path
+                  }));
+                }
+              } catch (error) {
+                row.接口数量 = "未知";
+                if (includeApis) {
+                  row.错误 = `获取接口列表失败: ${this.formatError(error)}`;
+                }
+              }
+
+              return row;
+            })
+          );
+
+          const scope = projectId ? `项目 ${projectId}` : "所有已配置项目";
+          const condition = keyword ? `，关键字「${keyword}」` : "";
+
+          return {
+            content: [{
+              type: "text",
+              text: `${scope} 下共找到 ${searchResult.total} 个分类${condition}:\n\n${JSON.stringify(rows, null, 2)}`
+            }],
+          };
+        } catch (error) {
+          this.logger.error(`查看分类列表时出错:`, error);
+          return {
+            content: [{ type: "text", text: `查看分类列表出错: ${this.formatError(error)}` }],
+          };
+        }
+      }
+    );
+  }
+
+  /**
+   * 统一格式化错误信息，避免各处拼接出 "Error: xxx" 或 "[object Object]"
+   */
+  private formatError(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    if (typeof error === "object" && error !== null) {
+      const err = error as { message?: string; status?: number };
+      if (err.message) {
+        return err.status ? `${err.message}（HTTP ${err.status}）` : err.message;
+      }
+      return JSON.stringify(error);
+    }
+    return String(error);
+  }
+
+  /**
+   * 根据分类ID在已配置项目中查找分类，用于修改/删除前确认归属项目
+   */
+  private async resolveCategory(
+    catid: string
+  ): Promise<{ projectId: string; category: CategoryInfo } | null> {
+    // 1. 先查缓存
+    for (const [projectId, categories] of this.yapiService.getCategoryListCache().entries()) {
+      const found = categories.find(cat => String(cat._id) === String(catid));
+      if (found) {
+        return { projectId, category: found };
+      }
+    }
+
+    // 2. 缓存未命中，从所有已配置项目重新拉取
+    await this.yapiService.loadAllProjectInfo();
+    const projectIds = Array.from(this.yapiService.getProjectInfoCache().keys());
+
+    for (const projectId of projectIds) {
+      try {
+        const categories = await this.yapiService.getCategoryList(projectId);
+        const found = categories.find(cat => String(cat._id) === String(catid));
+        if (found) {
+          return { projectId, category: found };
+        }
+      } catch (error) {
+        this.logger.debug(`查找分类时获取项目 ${projectId} 的分类失败:`, error);
+      }
+    }
+
+    return null;
   }
 
   async connect(transport: Transport): Promise<void> {
